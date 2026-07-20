@@ -7,6 +7,12 @@
   --radius-btn: 0.75rem;
 }
 
+/* Arabic UI: IBM Plex Sans Arabic */
+html[lang="ar"] {
+  --font-sans: var(--font-ibm-plex-arabic), var(--font-outfit), system-ui, sans-serif;
+  --font-display: var(--font-ibm-plex-arabic), var(--font-outfit), system-ui, sans-serif;
+}
+
 /* الوضع النهاري: صفحة بيضاء + تدرج أزرق من الأسفل للأعلى */
 html.light {
   --color-background: #ffffff;

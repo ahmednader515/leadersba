@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Outfit } from "next/font/google";
+import { IBM_Plex_Sans_Arabic, Outfit } from "next/font/google";
 import NextTopLoader from "nextjs-toploader";
 import { getServerSession } from "next-auth";
 import "./globals.css";
@@ -30,6 +30,13 @@ import {
 const outfit = Outfit({
   variable: "--font-outfit",
   subsets: ["latin"],
+  display: "swap",
+});
+
+const ibmPlexSansArabic = IBM_Plex_Sans_Arabic({
+  variable: "--font-ibm-plex-arabic",
+  subsets: ["arabic"],
+  weight: ["400", "500", "600", "700"],
   display: "swap",
 });
 
@@ -149,7 +156,9 @@ export default async function RootLayout({
           />
         ) : null}
         </head>
-      <body className={`${outfit.variable} font-sans antialiased min-h-screen flex flex-col`}>
+      <body
+        className={`${outfit.variable} ${ibmPlexSansArabic.variable} font-sans antialiased min-h-screen flex flex-col`}
+      >
         <NextTopLoader
           color={platformPrimaryColor ?? "#0d9488"}
           height={3}
