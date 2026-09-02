@@ -15,6 +15,8 @@ function normalizeCoursePrice(
   return Number.isFinite(n) ? n : null;
 }
 
+type CategoryBadge = { name: string; nameAr?: string | null; name_ar?: string | null; slug?: string };
+
 type Course = {
   id: string;
   title: string;
@@ -28,17 +30,29 @@ type Course = {
   price?: number | { toNumber?: () => number } | string;
   courseRating?: number | { toNumber?: () => number } | string | null;
   courseRatingCount?: number | { toNumber?: () => number } | string | null;
-  category?: { name: string; nameAr?: string | null } | null;
+  category?: CategoryBadge | null;
+  categories?: CategoryBadge[];
 };
+
+function getCategoryLabels(course: Course, locale: string): string[] {
+  const cats =
+    course.categories && course.categories.length > 0
+      ? course.categories
+      : course.category
+        ? [course.category]
+        : [];
+  return cats.map((cat) => {
+    const ar = (cat.nameAr ?? cat.name_ar)?.trim();
+    const en = cat.name?.trim();
+    return locale === "en" ? en || ar || "" : ar || en || "";
+  }).filter(Boolean);
+}
 
 export function CourseCard({ course }: { course: Course }) {
   const locale = useLocale();
   const t = useT();
   const displayTitle = locale === "en" ? (course.title || course.titleAr) : (course.titleAr || course.title);
-  const categoryName =
-    locale === "en"
-      ? (course.category?.name || course.category?.nameAr)
-      : (course.category?.nameAr || course.category?.name);
+  const categoryLabels = getCategoryLabels(course, locale);
   const shortDescription =
     locale === "en" ? (course.shortDescEn || course.shortDesc) : (course.shortDesc || course.shortDescEn);
   const slugOrId = (course.slug && course.slug.trim()) ? encodeURIComponent(course.slug.trim()) : course.id;
@@ -72,10 +86,14 @@ export function CourseCard({ course }: { course: Course }) {
         )}
       </div>
       <div className="p-5">
-        {categoryName && (
-          <span className="text-xs font-medium text-[var(--color-primary)]">
-            {categoryName}
-          </span>
+        {categoryLabels.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {categoryLabels.map((label, i) => (
+              <span key={`${label}-${i}`} className="text-xs font-medium text-[var(--color-primary)]">
+                {label}
+              </span>
+            ))}
+          </div>
         )}
         <h3 className="mt-1 text-lg font-semibold text-[var(--color-foreground)] group-hover:text-[var(--color-primary)]">
           {displayTitle}
@@ -85,7 +103,6 @@ export function CourseCard({ course }: { course: Course }) {
             {shortDescription}
           </p>
         )}
-        {/* السعر أولًا في DOM ليظهر على يمين الصف في RTL */}
         <div className="mt-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="shrink-0">
             {isPaid ? (

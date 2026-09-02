@@ -19,6 +19,7 @@ import { HomeStoreSection } from "@/components/HomeStoreSection";
 import { HomePlatformDetailsSection } from "@/components/HomePlatformDetailsSection";
 import { parsePlatformDetailsItems } from "@/lib/platform-details";
 import { parsePlatformNewsItems } from "@/lib/platform-news";
+import { collectDescendantIds, getCategoryParentId } from "@/lib/category-tree";
 import { HomePlatformNewsSlider } from "@/components/HomePlatformNewsSlider";
 import { getLocaleFromCookie, getServerTranslator } from "@/lib/i18n/server";
 import {
@@ -135,20 +136,35 @@ export async function HomePageBelowFold({
         })
       : [];
 
+  const rootCategories = categories.filter((c) => !getCategoryParentId(c));
+
   const categoryIdToCourses = new Map<string, CourseWithCategory[]>();
   const uncategorized: CourseWithCategory[] = [];
   for (const c of courses) {
-    const catId = (c as { category?: { id?: string } }).category?.id;
-    if (catId) {
-      if (!categoryIdToCourses.has(catId)) categoryIdToCourses.set(catId, []);
-      categoryIdToCourses.get(catId)!.push(c);
-    } else {
+    const courseCats = (c as { categories?: { id: string }[] }).categories ?? [];
+    if (courseCats.length === 0) {
       uncategorized.push(c);
+      continue;
+    }
+    const matchedRoots = new Set<string>();
+    for (const root of rootCategories) {
+      const allowed = collectDescendantIds(root.id, categories);
+      if (courseCats.some((cat) => allowed.has(cat.id))) {
+        matchedRoots.add(root.id);
+      }
+    }
+    if (matchedRoots.size === 0) {
+      uncategorized.push(c);
+      continue;
+    }
+    for (const rootId of matchedRoots) {
+      if (!categoryIdToCourses.has(rootId)) categoryIdToCourses.set(rootId, []);
+      categoryIdToCourses.get(rootId)!.push(c);
     }
   }
 
   const sections: { title: string; slug?: string; courses: CourseWithCategory[] }[] = [];
-  for (const cat of categories) {
+  for (const cat of rootCategories) {
     const list = categoryIdToCourses.get(cat.id);
     if (list?.length) {
       sections.push({

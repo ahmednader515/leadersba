@@ -5,20 +5,23 @@ import { useRouter } from "next/navigation";
 import { useT } from "@/components/LocaleProvider";
 import { CourseFormSaveOverlay } from "../CourseFormSaveOverlay";
 
-type CategoryOption = { id: string; name: string; nameAr?: string | null };
+import { CategoryTreePicker } from "@/components/CategoryTreePicker";
+import type { Category } from "@/lib/types";
+
 type LessonRow = { title: string; videoUrl: string; content: string; pdfUrl: string; acceptsHomework: boolean };
 type QuestionOptionRow = { text: string; isCorrect: boolean };
 type QuestionRow = { type: "MULTIPLE_CHOICE" | "TRUE_FALSE"; questionText: string; options: QuestionOptionRow[] };
 type QuizRow = { title: string; timeLimitMinutes: string; questions: QuestionRow[] };
 type ContentOrderEntry = { type: "lesson"; index: number } | { type: "quiz"; index: number };
 
-export function CreateCourseForm() {
+export function CreateCourseForm({ allowInlineCategoryManage = false }: { allowInlineCategoryManage?: boolean }) {
   const router = useRouter();
   const t = useT();
   const Cf = "dashboard.courseForm";
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [categories, setCategories] = useState<CategoryOption[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryIds, setCategoryIds] = useState<string[]>([]);
   const [form, setForm] = useState({
     titleAr: "",
     titleEn: "",
@@ -29,7 +32,6 @@ export function CreateCourseForm() {
     imageUrl: "",
     price: "",
     maxQuizAttempts: "",
-    categoryId: "",
     categoryNameAr: "",
     categoryNameEn: "",
   });
@@ -57,7 +59,7 @@ export function CreateCourseForm() {
         alert(data.error ?? t(`${Cf}.deleteCategoryFailed`));
         return;
       }
-      if (form.categoryId === catId) setForm((f) => ({ ...f, categoryId: "" }));
+      if (categoryIds.includes(catId)) setCategoryIds((ids) => ids.filter((x) => x !== catId));
       loadCategories();
     } finally {
       setDeletingCategoryId(null);
@@ -253,7 +255,7 @@ export function CreateCourseForm() {
       maxQuizAttempts: form.maxQuizAttempts.trim() ? parseInt(form.maxQuizAttempts, 10) : null,
       ...(form.categoryNameAr.trim() || form.categoryNameEn.trim()
         ? { categoryNameAr: form.categoryNameAr.trim(), categoryNameEn: form.categoryNameEn.trim() }
-        : form.categoryId ? { categoryId: form.categoryId } : {}),
+        : { categoryIds }),
       lessons: validLessons.map((l) => ({
           title: l.title.trim(),
           videoUrl: l.videoUrl.trim() || undefined,
@@ -365,55 +367,63 @@ export function CreateCourseForm() {
           </div>
           <div>
             <label className="block text-sm font-medium text-[var(--color-foreground)]">{t(`${Cf}.categoryOptional`)}</label>
-            <p className="mt-1 text-xs text-[var(--color-muted)]">{t(`${Cf}.categoryHelpChooseOrNew`)}</p>
-            <select
-              value={form.categoryNameAr.trim() || form.categoryNameEn.trim() ? "" : form.categoryId}
-              onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value, categoryNameAr: "", categoryNameEn: "" }))}
-              className="mt-1 w-full rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2"
-            >
-              <option value="">{t(`${Cf}.noCategoryOption`)}</option>
-              {categories.map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.nameAr ?? cat.name}
-                </option>
-              ))}
-            </select>
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              {allowInlineCategoryManage ? t(`${Cf}.categoryHelpChooseOrNew`) : t(`${Cf}.categoryHelpMulti`)}
+            </p>
             <div className="mt-2">
-              <label className="block text-xs text-[var(--color-muted)]">{t(`${Cf}.newCategoryBilingualHint`)}</label>
-              <input
-                type="text"
-                value={form.categoryNameAr}
-                onChange={(e) => setForm((f) => ({ ...f, categoryNameAr: e.target.value, categoryId: "" }))}
-                placeholder={t(`${Cf}.newCategoryArabicPlaceholder`)}
-                className="mt-1 w-full rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm"
-              />
-              <input
-                type="text"
-                value={form.categoryNameEn}
-                onChange={(e) => setForm((f) => ({ ...f, categoryNameEn: e.target.value, categoryId: "" }))}
-                placeholder={t(`${Cf}.newCategoryEnglishLabel`)}
-                className="mt-1 w-full rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm"
+              <CategoryTreePicker
+                categories={categories}
+                selectedIds={categoryIds}
+                onChange={setCategoryIds}
               />
             </div>
-            {categories.length > 0 && (
-              <div className="mt-3">
-                <p className="mb-2 text-xs font-medium text-[var(--color-muted)]">{t(`${Cf}.deleteExistingSection`)}</p>
-                <ul className="space-y-1.5">
-                  {categories.map((cat) => (
-                    <li key={cat.id} className="flex items-center justify-between gap-2 rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm">
-                      <span className="text-[var(--color-foreground)]">{cat.nameAr ?? cat.name}</span>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteCategory(cat.id)}
-                        disabled={deletingCategoryId === cat.id}
-                        className="rounded border border-red-500/50 bg-red-500/10 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
-                      >
-                        {deletingCategoryId === cat.id ? t(`${Cf}.deletingBtn`) : t(`${Cf}.deleteBtn`)}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+            {allowInlineCategoryManage && (
+              <>
+                <div className="mt-2">
+                  <label className="block text-xs text-[var(--color-muted)]">{t(`${Cf}.newCategoryBilingualHint`)}</label>
+                  <input
+                    type="text"
+                    value={form.categoryNameAr}
+                    onChange={(e) => setForm((f) => ({ ...f, categoryNameAr: e.target.value }))}
+                    placeholder={t(`${Cf}.newCategoryArabicPlaceholder`)}
+                    className="mt-1 w-full rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm"
+                  />
+                  <input
+                    type="text"
+                    value={form.categoryNameEn}
+                    onChange={(e) => setForm((f) => ({ ...f, categoryNameEn: e.target.value }))}
+                    placeholder={t(`${Cf}.newCategoryEnglishLabel`)}
+                    className="mt-1 w-full rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm"
+                  />
+                </div>
+                {categories.length > 0 && (
+                  <div className="mt-3">
+                    <p className="mb-2 text-xs font-medium text-[var(--color-muted)]">{t(`${Cf}.deleteExistingSection`)}</p>
+                    <ul className="space-y-1.5">
+                      {categories.map((cat) => (
+                        <li key={cat.id} className="flex items-center justify-between gap-2 rounded-[var(--radius-btn)] border border-[var(--color-border)] bg-[var(--color-background)] px-3 py-2 text-sm">
+                          <span className="text-[var(--color-foreground)]">{(cat.name_ar ?? (cat as { nameAr?: string }).nameAr) ?? cat.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCategory(cat.id)}
+                            disabled={deletingCategoryId === cat.id}
+                            className="rounded border border-red-500/50 bg-red-500/10 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
+                          >
+                            {deletingCategoryId === cat.id ? t(`${Cf}.deletingBtn`) : t(`${Cf}.deleteBtn`)}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+            {!allowInlineCategoryManage && (
+              <p className="mt-2 text-xs text-[var(--color-muted)]">
+                <a href="/dashboard/categories" className="text-[var(--color-primary)] hover:underline">
+                  {t(`${Cf}.categoriesManageLink`)}
+                </a>
+              </p>
             )}
           </div>
           <div>

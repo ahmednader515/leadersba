@@ -512,6 +512,7 @@ export async function deletePasswordChangeRequest(requestId: string): Promise<bo
 
 // ----- Category -----
 let categoryCreatedByColumnEnsured = false;
+let categoryTreeAndJoinTableEnsured = false;
 
 /** يضيف عمود created_by_id لجدول الأقسام (أقسام المنصة = NULL، قسم المدرس = معرّف المدرس) */
 async function ensureCategoryCreatedByColumn(): Promise<void> {
@@ -524,20 +525,170 @@ async function ensureCategoryCreatedByColumn(): Promise<void> {
   }
 }
 
-export async function getCategories(): Promise<Category[]> {
+/** parent_id + CourseCategory join table + backfill from legacy category_id */
+async function ensureCategoryTreeAndJoinTable(): Promise<void> {
+  if (categoryTreeAndJoinTableEnsured) return;
   await ensureCategoryCreatedByColumn();
-  const rows = await sql`SELECT * FROM "Category" ORDER BY "order" ASC`;
+  try {
+    await sql`ALTER TABLE "Category" ADD COLUMN IF NOT EXISTS parent_id TEXT REFERENCES "Category"(id) ON DELETE CASCADE`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS "CourseCategory" (
+        course_id TEXT NOT NULL REFERENCES "Course"(id) ON DELETE CASCADE,
+        category_id TEXT NOT NULL REFERENCES "Category"(id) ON DELETE CASCADE,
+        PRIMARY KEY (course_id, category_id)
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS "CourseCategory_category_id_idx" ON "CourseCategory"(category_id)`;
+    try {
+      await sql`
+        INSERT INTO "CourseCategory" (course_id, category_id)
+        SELECT id, category_id FROM "Course" WHERE category_id IS NOT NULL
+        ON CONFLICT DO NOTHING
+      `;
+    } catch {
+      /* category_id column may not exist on newer schemas */
+    }
+    categoryTreeAndJoinTableEnsured = true;
+  } catch {
+    /* DDL غير متاح */
+  }
+}
+
+export async function attachCategoriesToCourses<T extends { id: string }>(
+  courses: T[],
+): Promise<(T & { categories: Category[] })[]> {
+  if (courses.length === 0) return [];
+  await ensureCategoryTreeAndJoinTable();
+  const ids = courses.map((c) => c.id);
+  const rows = await sql`
+    SELECT cc.course_id, cat.*
+    FROM "CourseCategory" cc
+    INNER JOIN "Category" cat ON cat.id = cc.category_id
+    WHERE cc.course_id = ANY(${ids})
+    ORDER BY cat."order" ASC, cat.name ASC
+  `;
+  const map = new Map<string, Category[]>();
+  for (const r of rows as Record<string, unknown>[]) {
+    const courseId = String(r.course_id);
+    const { course_id: _cid, ...catRow } = r;
+    void _cid;
+    const cat = rowToCamel(catRow) as Category;
+    if (!map.has(courseId)) map.set(courseId, []);
+    map.get(courseId)!.push(cat);
+  }
+  return courses.map((c) => ({ ...c, categories: map.get(c.id) ?? [] }));
+}
+
+export async function getCategoriesForCourse(courseId: string): Promise<Category[]> {
+  await ensureCategoryTreeAndJoinTable();
+  if (!courseId?.trim()) return [];
+  const rows = await sql`
+    SELECT cat.* FROM "CourseCategory" cc
+    INNER JOIN "Category" cat ON cat.id = cc.category_id
+    WHERE cc.course_id = ${courseId.trim()}
+    ORDER BY cat."order" ASC, cat.name ASC
+  `;
+  return rowsToCamel(rows as Record<string, unknown>[]) as Category[];
+}
+
+export async function getCategoryIdsForCourse(courseId: string): Promise<string[]> {
+  const cats = await getCategoriesForCourse(courseId);
+  return cats.map((c) => c.id);
+}
+
+export async function setCourseCategories(courseId: string, categoryIds: string[]): Promise<void> {
+  await ensureCategoryTreeAndJoinTable();
+  const unique = [...new Set(categoryIds.map((id) => id.trim()).filter(Boolean))];
+  await sql`DELETE FROM "CourseCategory" WHERE course_id = ${courseId}`;
+  for (const catId of unique) {
+    await sql`
+      INSERT INTO "CourseCategory" (course_id, category_id)
+      VALUES (${courseId}, ${catId})
+      ON CONFLICT DO NOTHING
+    `;
+  }
+}
+
+export async function getCategoryBySlug(slug: string): Promise<Category | null> {
+  await ensureCategoryTreeAndJoinTable();
+  const s = slug?.trim();
+  if (!s) return null;
+  const rows = await sql`SELECT * FROM "Category" WHERE slug = ${s} LIMIT 1`;
+  return (rowToCamel(rows[0] as Record<string, unknown>) as Category) ?? null;
+}
+
+/** All descendant category ids (excluding the root id itself) */
+export async function getCategoryDescendantIds(categoryId: string): Promise<string[]> {
+  await ensureCategoryTreeAndJoinTable();
+  const id = categoryId?.trim();
+  if (!id) return [];
+  const rows = await sql`
+    WITH RECURSIVE descendants AS (
+      SELECT id FROM "Category" WHERE parent_id = ${id}
+      UNION ALL
+      SELECT c.id FROM "Category" c
+      INNER JOIN descendants d ON c.parent_id = d.id
+    )
+    SELECT id FROM descendants
+  `;
+  return (rows as { id: string }[]).map((r) => r.id);
+}
+
+/** Returns true if candidateId is the same as categoryId or a descendant of it */
+export async function isCategoryDescendantOf(categoryId: string, candidateId: string): Promise<boolean> {
+  if (!categoryId?.trim() || !candidateId?.trim()) return false;
+  if (categoryId.trim() === candidateId.trim()) return true;
+  const descendants = await getCategoryDescendantIds(categoryId.trim());
+  return descendants.includes(candidateId.trim());
+}
+
+/** Prevent assigning a category as parent of itself or its descendant */
+export async function isValidCategoryParent(categoryId: string, newParentId: string | null): Promise<boolean> {
+  if (!newParentId?.trim()) return true;
+  if (categoryId.trim() === newParentId.trim()) return false;
+  return !(await isCategoryDescendantOf(categoryId.trim(), newParentId.trim()));
+}
+
+export async function categorySlugExists(slug: string, excludeId?: string): Promise<boolean> {
+  await ensureCategoryTreeAndJoinTable();
+  const s = slug?.trim();
+  if (!s) return false;
+  const rows = excludeId?.trim()
+    ? await sql`SELECT 1 FROM "Category" WHERE slug = ${s} AND id != ${excludeId.trim()} LIMIT 1`
+    : await sql`SELECT 1 FROM "Category" WHERE slug = ${s} LIMIT 1`;
+  return rows.length > 0;
+}
+
+export async function countChildCategories(categoryId: string): Promise<number> {
+  await ensureCategoryTreeAndJoinTable();
+  const rows = await sql`SELECT COUNT(*)::int AS c FROM "Category" WHERE parent_id = ${categoryId.trim()}`;
+  return Number((rows[0] as { c?: number })?.c ?? 0);
+}
+
+export async function countCoursesInCategory(categoryId: string): Promise<number> {
+  await ensureCategoryTreeAndJoinTable();
+  const rows = await sql`
+    SELECT COUNT(DISTINCT cc.course_id)::int AS c
+    FROM "CourseCategory" cc
+    WHERE cc.category_id = ${categoryId.trim()}
+  `;
+  return Number((rows[0] as { c?: number })?.c ?? 0);
+}
+
+export async function getCategories(): Promise<Category[]> {
+  await ensureCategoryTreeAndJoinTable();
+  const rows = await sql`SELECT * FROM "Category" ORDER BY "order" ASC, name ASC`;
   return rowsToCamel(rows as Record<string, unknown>[]) as Category[];
 }
 
 /** أقسام تظهر في لوحة إنشاء/تعديل الدورة: المدرس يرى أقسامه فقط؛ الأدمن يرى أقسام المنصة وأقسام أي أدمن/مساعد */
 export async function getCategoriesForDashboard(userId: string, role: UserRole): Promise<Category[]> {
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   if (role === "TEACHER") {
     const rows = await sql`
       SELECT * FROM "Category"
       WHERE created_by_id = ${userId}
-      ORDER BY "order" ASC
+      ORDER BY "order" ASC, name ASC
     `;
     return rowsToCamel(rows as Record<string, unknown>[]) as Category[];
   }
@@ -550,7 +701,7 @@ export async function getCategoriesForDashboard(userId: string, role: UserRole):
            WHERE u.id = c.created_by_id
              AND u.role IN ('ADMIN', 'ASSISTANT_ADMIN')
          )
-      ORDER BY c."order" ASC
+      ORDER BY c."order" ASC, c.name ASC
     `;
     return rowsToCamel(rows as Record<string, unknown>[]) as Category[];
   }
@@ -558,7 +709,7 @@ export async function getCategoriesForDashboard(userId: string, role: UserRole):
 }
 
 export async function getCategoryById(id: string): Promise<Category | null> {
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   if (!id?.trim()) return null;
   const rows = await sql`SELECT * FROM "Category" WHERE id = ${id.trim()} LIMIT 1`;
   return (rowToCamel(rows[0] as Record<string, unknown>) as Category) ?? null;
@@ -570,7 +721,7 @@ export async function categoryIsManageableOnDashboard(
   userId: string,
   role: UserRole
 ): Promise<boolean> {
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   const id = categoryId.trim();
   if (!id) return false;
   if (role === "TEACHER") {
@@ -608,21 +759,52 @@ export async function createCategory(data: {
   image_url?: string | null;
   order?: number;
   created_by_id?: string | null;
+  parent_id?: string | null;
 }): Promise<Category> {
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   const id = generateId();
   const owner = data.created_by_id ?? null;
+  const parentId = data.parent_id ?? null;
   await sql`
-    INSERT INTO "Category" (id, name, name_ar, slug, description, image_url, "order", created_by_id)
-    VALUES (${id}, ${data.name}, ${data.name_ar ?? null}, ${data.slug}, ${data.description ?? null}, ${data.image_url ?? null}, ${data.order ?? 0}, ${owner})
+    INSERT INTO "Category" (id, name, name_ar, slug, description, image_url, "order", created_by_id, parent_id)
+    VALUES (${id}, ${data.name}, ${data.name_ar ?? null}, ${data.slug}, ${data.description ?? null}, ${data.image_url ?? null}, ${data.order ?? 0}, ${owner}, ${parentId})
   `;
   const rows = await sql`SELECT * FROM "Category" WHERE id = ${id} LIMIT 1`;
   return rowToCamel(rows[0] as Record<string, unknown>) as Category;
 }
 
+export async function updateCategory(
+  id: string,
+  data: {
+    name?: string;
+    name_ar?: string | null;
+    slug?: string;
+    description?: string | null;
+    image_url?: string | null;
+    order?: number;
+    parent_id?: string | null;
+  },
+): Promise<Category | null> {
+  await ensureCategoryTreeAndJoinTable();
+  const catId = id?.trim();
+  if (!catId) return null;
+  if (data.parent_id !== undefined && data.parent_id !== null) {
+    const valid = await isValidCategoryParent(catId, data.parent_id);
+    if (!valid) return null;
+  }
+  if (data.name !== undefined) await sql`UPDATE "Category" SET name = ${data.name}, updated_at = NOW() WHERE id = ${catId}`;
+  if (data.name_ar !== undefined) await sql`UPDATE "Category" SET name_ar = ${data.name_ar}, updated_at = NOW() WHERE id = ${catId}`;
+  if (data.slug !== undefined) await sql`UPDATE "Category" SET slug = ${data.slug}, updated_at = NOW() WHERE id = ${catId}`;
+  if (data.description !== undefined) await sql`UPDATE "Category" SET description = ${data.description}, updated_at = NOW() WHERE id = ${catId}`;
+  if (data.image_url !== undefined) await sql`UPDATE "Category" SET image_url = ${data.image_url}, updated_at = NOW() WHERE id = ${catId}`;
+  if (data.order !== undefined) await sql`UPDATE "Category" SET "order" = ${data.order}, updated_at = NOW() WHERE id = ${catId}`;
+  if (data.parent_id !== undefined) await sql`UPDATE "Category" SET parent_id = ${data.parent_id}, updated_at = NOW() WHERE id = ${catId}`;
+  return getCategoryById(catId);
+}
+
 /** بحث عام بالاسم (بدون تقييد مالك) — للبذرة والأدوات القديمة */
 export async function getCategoryByName(name: string): Promise<Category | null> {
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   const n = name.trim();
   if (!n) return null;
   const rows = await sql`
@@ -640,7 +822,7 @@ export async function findCategoryByNameForDashboard(
   userId: string,
   role: UserRole
 ): Promise<Category | null> {
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   const n = name.trim();
   if (!n) return null;
   if (role === "TEACHER") {
@@ -677,10 +859,10 @@ export async function findCategoryByNameForDashboard(
   return null;
 }
 
-/** حذف قسم — الدورات المرتبطة به تصبح بدون قسم (category_id = null) */
+/** حذف قسم — CASCADE يحذف الأبناء وروابط CourseCategory */
 export async function deleteCategory(id: string): Promise<boolean> {
   if (!id?.trim()) return false;
-  await ensureCategoryCreatedByColumn();
+  await ensureCategoryTreeAndJoinTable();
   await sql`DELETE FROM "Category" WHERE id = ${id.trim()}`;
   return true;
 }
@@ -1213,7 +1395,8 @@ export async function listTeachersPublic(categoryId?: string | null): Promise<
         SELECT DISTINCT u.id, u.name, u.teacher_subject, u.teacher_avatar_url
         FROM "User" u
         INNER JOIN "Course" c ON c.created_by_id = u.id AND c.is_published = true
-        WHERE u.role = 'TEACHER' AND c.category_id = ${cat}
+        INNER JOIN "CourseCategory" cc ON cc.course_id = c.id
+        WHERE u.role = 'TEACHER' AND cc.category_id = ${cat}
         ORDER BY u.name ASC
       `
     : await sql`
@@ -3218,23 +3401,19 @@ function courseRatingSelectSql() {
   `;
 }
 
-export async function getCourseBySlug(slug: string): Promise<(Course & { category?: Category }) | null> {
+export async function getCourseBySlug(slug: string): Promise<(Course & { categories: Category[] }) | null> {
   await ensureLessonRatingsSchema();
   const rows = await sql`
-    SELECT c.*, ${courseRatingSelectSql()}, cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug
+    SELECT c.*, ${courseRatingSelectSql()}
     FROM "Course" c
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
     WHERE c.slug = ${slug} AND c.is_published = true
     LIMIT 1
   `;
   const r = rows[0] as Record<string, unknown> | undefined;
   if (!r) return null;
-  const category = r.cat_id
-    ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-    : null;
-  const { cat_id, cat_name, cat_name_ar, cat_slug, ...courseRow } = r;
-  const base = rowToCamel(courseRow) ?? {};
-  return { ...base, category } as unknown as Course & { category?: Category };
+  const base = rowToCamel(r) as Course;
+  const [withCats] = await attachCategoriesToCourses([{ ...base, id: String(base.id) }]);
+  return withCats ?? null;
 }
 
 export async function getCourseById(id: string): Promise<Course | null> {
@@ -3262,32 +3441,19 @@ export async function getCourseBySlugOrId(slugOrId: string): Promise<Course | nu
   return rowToCamel(rows[0] as Record<string, unknown>) as Course | null;
 }
 
-export async function getCoursesPublished(withCategory = true): Promise<(Course & { category?: Category })[]> {
+export async function getCoursesPublished(withCategory = true): Promise<(Course & { categories: Category[] })[]> {
   await ensureLessonRatingsSchema();
-  if (!withCategory) {
-    const rows = await sql`
-      SELECT c.*, ${courseRatingSelectSql()}
-      FROM "Course" c
-      WHERE c.is_published = true
-      ORDER BY c."order" ASC, c.created_at DESC
-    `;
-    return rowsToCamel(rows as Record<string, unknown>[]) as (Course & { category?: Category })[];
-  }
   const rows = await sql`
-    SELECT c.*, ${courseRatingSelectSql()}, cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug
+    SELECT c.*, ${courseRatingSelectSql()}
     FROM "Course" c
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
     WHERE c.is_published = true
     ORDER BY c."order" ASC, c.created_at DESC
   `;
-  return (rows as Record<string, unknown>[]).map((r) => {
-    const category = r.cat_id
-      ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-      : null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, ...rest } = r;
-    const base = rowToCamel(rest) ?? {};
-    return { ...base, category };
-  }) as unknown as (Course & { category?: Category })[];
+  const base = rowsToCamel(rows as Record<string, unknown>[]) as Course[];
+  if (!withCategory) {
+    return base.map((c) => ({ ...c, categories: [] }));
+  }
+  return attachCategoriesToCourses(base);
 }
 
 /** يعيد خريطة معرف كورس → slug للكورسات المنشورة فقط (لروابط السلايدر في الصفحة الرئيسية). */
@@ -3314,7 +3480,7 @@ export async function getCoursesWithCounts(): Promise<
     Record<string, unknown> & {
       lessonsCount: number;
       enrollmentsCount: number;
-      category?: { id: string; name: string; nameAr?: string | null; slug: string } | null;
+      categories: Category[];
     }
   >
 > {
@@ -3323,29 +3489,21 @@ export async function getCoursesWithCounts(): Promise<
     SELECT c.*,
       ${courseRatingSelectSql()},
       (SELECT COUNT(*)::int FROM "Lesson" WHERE course_id = c.id) as lessons_count,
-      (SELECT COUNT(*)::int FROM "Enrollment" WHERE course_id = c.id) as enrollments_count,
-      cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug, cat."order" as cat_order
+      (SELECT COUNT(*)::int FROM "Enrollment" WHERE course_id = c.id) as enrollments_count
     FROM "Course" c
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
-    ORDER BY cat."order" ASC NULLS LAST, c."order" ASC, c.created_at DESC
+    ORDER BY c."order" ASC, c.created_at DESC
   `;
-  return (rows as Record<string, unknown>[]).map((r) => {
-    const category =
-      r.cat_id != null
-        ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-        : null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, cat_order, ...rest } = r;
-    return {
-      ...rowToCamel(rest),
-      lessonsCount: Number((r as { lessons_count?: number }).lessons_count ?? 0),
-      enrollmentsCount: Number((r as { enrollments_count?: number }).enrollments_count ?? 0),
-      category: category as { id: string; name: string; nameAr?: string | null; slug: string } | null,
-    };
-  }) as Array<
+  const mapped = (rows as Record<string, unknown>[]).map((r) => ({
+    ...(rowToCamel(r) as Record<string, unknown>),
+    id: String((r as { id: string }).id),
+    lessonsCount: Number((r as { lessons_count?: number }).lessons_count ?? 0),
+    enrollmentsCount: Number((r as { enrollments_count?: number }).enrollments_count ?? 0),
+  }));
+  return (await attachCategoriesToCourses(mapped)) as Array<
     Record<string, unknown> & {
       lessonsCount: number;
       enrollmentsCount: number;
-      category?: { id: string; name: string; nameAr?: string | null; slug: string } | null;
+      categories: Category[];
     }
   >;
 }
@@ -3358,7 +3516,7 @@ export async function getCoursesWithCountsForCreator(
     Record<string, unknown> & {
       lessonsCount: number;
       enrollmentsCount: number;
-      category?: { id: string; name: string; nameAr?: string | null; slug: string } | null;
+      categories: Category[];
     }
   >
 > {
@@ -3367,50 +3525,35 @@ export async function getCoursesWithCountsForCreator(
     SELECT c.*,
       ${courseRatingSelectSql()},
       (SELECT COUNT(*)::int FROM "Lesson" WHERE course_id = c.id) as lessons_count,
-      (SELECT COUNT(*)::int FROM "Enrollment" WHERE course_id = c.id) as enrollments_count,
-      cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug, cat."order" as cat_order
+      (SELECT COUNT(*)::int FROM "Enrollment" WHERE course_id = c.id) as enrollments_count
     FROM "Course" c
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
     WHERE c.created_by_id = ${creatorId}
-    ORDER BY cat."order" ASC NULLS LAST, c."order" ASC, c.created_at DESC
+    ORDER BY c."order" ASC, c.created_at DESC
   `;
-  return (rows as Record<string, unknown>[]).map((r) => {
-    const category =
-      r.cat_id != null
-        ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-        : null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, cat_order, ...rest } = r;
-    return {
-      ...rowToCamel(rest),
-      lessonsCount: Number((r as { lessons_count?: number }).lessons_count ?? 0),
-      enrollmentsCount: Number((r as { enrollments_count?: number }).enrollments_count ?? 0),
-      category: category as { id: string; name: string; nameAr?: string | null; slug: string } | null,
-    };
-  }) as Array<
+  const mapped = (rows as Record<string, unknown>[]).map((r) => ({
+    ...(rowToCamel(r) as Record<string, unknown>),
+    id: String((r as { id: string }).id),
+    lessonsCount: Number((r as { lessons_count?: number }).lessons_count ?? 0),
+    enrollmentsCount: Number((r as { enrollments_count?: number }).enrollments_count ?? 0),
+  }));
+  return (await attachCategoriesToCourses(mapped)) as Array<
     Record<string, unknown> & {
       lessonsCount: number;
       enrollmentsCount: number;
-      category?: { id: string; name: string; nameAr?: string | null; slug: string } | null;
+      categories: Category[];
     }
   >;
 }
 
-export async function getCoursesAll(): Promise<(Course & { category?: Category })[]> {
+export async function getCoursesAll(): Promise<(Course & { categories: Category[] })[]> {
   await ensureLessonRatingsSchema();
   const rows = await sql`
-    SELECT c.*, ${courseRatingSelectSql()}, cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug
+    SELECT c.*, ${courseRatingSelectSql()}
     FROM "Course" c
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
     ORDER BY c."order" ASC, c.created_at DESC
   `;
-  return (rows as Record<string, unknown>[]).map((r) => {
-    const category = r.cat_id
-      ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-      : null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, ...rest } = r;
-    const base = rowToCamel(rest) ?? {};
-    return { ...base, category };
-  }) as unknown as (Course & { category?: Category })[];
+  const base = rowsToCamel(rows as Record<string, unknown>[]) as Course[];
+  return attachCategoriesToCourses(base);
 }
 
 export async function courseExistsBySlug(slug: string): Promise<boolean> {
@@ -3442,38 +3585,36 @@ export async function createCourse(data: {
   is_published: boolean;
   created_by_id: string;
   max_quiz_attempts?: number | null;
-  category_id?: string | null;
   accepts_homework?: boolean;
 }): Promise<Course> {
   await ensureCourseBilingualColumns();
   const id = generateId();
-  const catId = data.category_id ?? null;
   const acceptsHomework = data.accepts_homework ?? false;
   let rows: Record<string, unknown>[];
   try {
     rows = await sql`
-      INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, max_quiz_attempts, category_id, accepts_homework)
-      VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${data.max_quiz_attempts ?? null}, ${catId}, ${acceptsHomework})
+      INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, max_quiz_attempts, accepts_homework)
+      VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${data.max_quiz_attempts ?? null}, ${acceptsHomework})
       RETURNING *
     `;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("description_en") || msg.includes("short_desc_en")) {
       rows = await sql`
-        INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, max_quiz_attempts, category_id, accepts_homework)
-        VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${data.max_quiz_attempts ?? null}, ${catId}, ${acceptsHomework})
+        INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, max_quiz_attempts, accepts_homework)
+        VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${data.max_quiz_attempts ?? null}, ${acceptsHomework})
         RETURNING *
       `;
-    } else if (msg.includes("accepts_homework") || msg.includes("column") && msg.includes("does not exist")) {
+    } else if (msg.includes("accepts_homework") || (msg.includes("column") && msg.includes("does not exist"))) {
       rows = await sql`
-        INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, max_quiz_attempts, category_id)
-        VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${data.max_quiz_attempts ?? null}, ${catId})
+        INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, max_quiz_attempts)
+        VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${data.max_quiz_attempts ?? null})
         RETURNING *
       `;
-    } else if (msg.includes("max_quiz_attempts") || msg.includes("category_id")) {
+    } else if (msg.includes("max_quiz_attempts")) {
       rows = await sql`
-        INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id, category_id)
-        VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id}, ${catId})
+        INSERT INTO "Course" (id, title, title_ar, slug, description, description_en, short_desc, short_desc_en, image_url, price, is_published, created_by_id)
+        VALUES (${id}, ${data.title}, ${data.title_ar}, ${data.slug}, ${data.description}, ${data.description_en ?? null}, ${data.short_desc ?? null}, ${data.short_desc_en ?? null}, ${data.image_url ?? null}, ${data.price}, ${data.is_published}, ${data.created_by_id})
         RETURNING *
       `;
     } else {
@@ -3499,7 +3640,6 @@ export async function updateCourse(
     price?: number;
     is_published?: boolean;
     max_quiz_attempts?: number | null;
-    category_id?: string | null;
     accepts_homework?: boolean;
   }
 ): Promise<void> {
@@ -3514,7 +3654,6 @@ export async function updateCourse(
   if (data.price !== undefined) await sql`UPDATE "Course" SET price = ${data.price}, updated_at = NOW() WHERE id = ${id}`;
   if (data.is_published !== undefined) await sql`UPDATE "Course" SET is_published = ${data.is_published}, updated_at = NOW() WHERE id = ${id}`;
   if (data.max_quiz_attempts !== undefined) await sql`UPDATE "Course" SET max_quiz_attempts = ${data.max_quiz_attempts}, updated_at = NOW() WHERE id = ${id}`;
-  if (data.category_id !== undefined) await sql`UPDATE "Course" SET category_id = ${data.category_id}, updated_at = NOW() WHERE id = ${id}`;
   if (data.accepts_homework !== undefined) {
     try {
       await sql`UPDATE "Course" SET accepts_homework = ${data.accepts_homework}, updated_at = NOW() WHERE id = ${id}`;
@@ -3584,29 +3723,28 @@ export async function deleteLessonsByCourseId(courseId: string): Promise<void> {
 
 /** جلب كورس مع الحصص والاختبارات (عدد أسئلة كل اختبار) — للصفحة التفصيلية */
 export async function getCourseWithContent(segment: string): Promise<{
-  course: (Course & { category?: Record<string, unknown> }) | null;
+  course: (Course & { categories: Category[] }) | null;
   lessons: Record<string, unknown>[];
   quizzes: Array<Record<string, unknown> & { _count: { questions: number } }>;
 } | null> {
   const isId = /^c[a-z0-9]{22}$/i.test(segment);
-  let courseRow: Record<string, unknown> | null = null;
+  let courseWithCats: (Course & { categories: Category[] }) | null = null;
   if (isId) {
     const rows = await sql`
-      SELECT c.*, cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug
+      SELECT c.*
       FROM "Course" c
-      LEFT JOIN "Category" cat ON c.category_id = cat.id
       WHERE c.id = ${segment} AND c.is_published = true LIMIT 1
     `;
     const r = rows[0] as Record<string, unknown> | undefined;
     if (!r) return null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, ...rest } = r;
-    courseRow = { ...rowToCamel(rest), category: r.cat_id ? rowToCamel({ id: cat_id, name: cat_name, name_ar: cat_name_ar, slug: cat_slug }) : null };
+    const base = rowToCamel(r) as Course;
+    const [attached] = await attachCategoriesToCourses([{ ...base, id: String(base.id) }]);
+    courseWithCats = attached ?? null;
   } else {
-    const c = await getCourseBySlug(segment);
-    if (!c) return null;
-    courseRow = c as unknown as Record<string, unknown>;
+    courseWithCats = await getCourseBySlug(segment);
   }
-  const courseId = courseRow.id as string;
+  if (!courseWithCats) return null;
+  const courseId = courseWithCats.id;
   const lessonRows = await sql`SELECT * FROM "Lesson" WHERE course_id = ${courseId} ORDER BY "order" ASC`;
   const quizRows = await sql`
     SELECT q.*, (SELECT COUNT(*)::int FROM "Question" WHERE quiz_id = q.id) as question_count
@@ -3619,7 +3757,7 @@ export async function getCourseWithContent(segment: string): Promise<{
   })) as Array<Record<string, unknown> & { _count: { questions: number } }>;
 
   return {
-    course: courseRow as unknown as Course & { category?: Record<string, unknown> },
+    course: courseWithCats,
     lessons,
     quizzes,
   };
@@ -3985,13 +4123,12 @@ export async function hasPartialCourseAccess(userId: string, courseId: string): 
 }
 
 /** دورات الطالب: المسجّل فيها + الدورات المتاحة عبر أكواد (حصص/اختبارات محددة) + كل الدورات المدفوعة المنشورة عند اشتراك منصة نشط */
-export async function getAccessibleCoursesForUser(userId: string): Promise<(Course & { category?: Category })[]> {
+export async function getAccessibleCoursesForUser(userId: string): Promise<(Course & { categories: Category[] })[]> {
   await ensurePlatformSubscriptionSchema();
   await ensureLessonRatingsSchema();
   const rows = await sql`
-    SELECT c.*, ${courseRatingSelectSql()}, cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug
+    SELECT c.*, ${courseRatingSelectSql()}
     FROM "Course" c
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
     WHERE c.id IN (
       SELECT course_id FROM "Enrollment" WHERE user_id = ${userId}
       UNION
@@ -4015,14 +4152,8 @@ export async function getAccessibleCoursesForUser(userId: string): Promise<(Cour
     )
     ORDER BY c.created_at DESC
   `;
-  return (rows as Record<string, unknown>[]).map((r) => {
-    const category = r.cat_id
-      ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-      : null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, ...rest } = r;
-    const base = rowToCamel(rest) ?? {};
-    return { ...base, category };
-  }) as unknown as (Course & { category?: Category })[];
+  const base = rowsToCamel(rows as Record<string, unknown>[]) as Course[];
+  return attachCategoriesToCourses(base);
 }
 
 export type LessonRatingSummary = {
@@ -4728,24 +4859,17 @@ export async function getEnrollmentsWithCourseByUserId(userId: string): Promise<
 }
 
 /** دورات الطالب المسجّل فيها — بنفس شكل الكورسات في الصفحة الرئيسية (للعرض كبطاقات) */
-export async function getEnrolledCoursesForUser(userId: string): Promise<(Course & { category?: Category })[]> {
+export async function getEnrolledCoursesForUser(userId: string): Promise<(Course & { categories: Category[] })[]> {
   await ensureLessonRatingsSchema();
   const rows = await sql`
-    SELECT c.*, ${courseRatingSelectSql()}, cat.id as cat_id, cat.name as cat_name, cat.name_ar as cat_name_ar, cat.slug as cat_slug
+    SELECT c.*, ${courseRatingSelectSql()}
     FROM "Enrollment" e
     JOIN "Course" c ON c.id = e.course_id
-    LEFT JOIN "Category" cat ON c.category_id = cat.id
     WHERE e.user_id = ${userId}
     ORDER BY e.enrolled_at DESC
   `;
-  return (rows as Record<string, unknown>[]).map((r) => {
-    const category = r.cat_id
-      ? rowToCamel({ id: r.cat_id, name: r.cat_name, name_ar: r.cat_name_ar, slug: r.cat_slug })
-      : null;
-    const { cat_id, cat_name, cat_name_ar, cat_slug, ...rest } = r;
-    const base = rowToCamel(rest) ?? {};
-    return { ...base, category };
-  }) as unknown as (Course & { category?: Category })[];
+  const base = rowsToCamel(rows as Record<string, unknown>[]) as Course[];
+  return attachCategoriesToCourses(base);
 }
 
 export async function getUserByEmailExcludingId(email: string, excludeUserId: string): Promise<User | null> {

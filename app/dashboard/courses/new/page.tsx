@@ -25,7 +25,7 @@ export default async function NewCoursePage() {
       <h2 className="mt-4 text-xl font-bold text-[var(--color-foreground)]">
         {t("dashboard.courseNewPage.title")}
       </h2>
-      <CreateCourseForm />
+      <CreateCourseForm allowInlineCategoryManage={role === "TEACHER"} />
     </div>
   );
 }

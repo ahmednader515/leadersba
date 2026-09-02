@@ -8,7 +8,7 @@ import { getDir } from "@/lib/i18n/core";
 import type { Course } from "@/lib/types";
 import type { Category } from "@/lib/types";
 
-type CourseWithCategory = Course & { category?: Category };
+type CourseWithCategory = Course & { categories?: Category[]; category?: Category };
 
 type CourseCardCourse = {
   id: string;
@@ -22,16 +22,15 @@ type CourseCardCourse = {
   price?: number | string;
   courseRating?: number | string | null;
   courseRatingCount?: number | string | null;
-  category?: { name: string; nameAr?: string | null } | null;
+  categories?: { name: string; nameAr?: string | null }[];
 };
 
 function toCourseCardCourse(c: CourseWithCategory): CourseCardCourse {
   const raw = c as unknown as Record<string, unknown>;
-  const cat = c.category as { name?: string; nameAr?: string | null } | undefined;
+  const cats = c.categories ?? (c.category ? [c.category] : []);
   const titleAr = raw.titleAr != null ? String(raw.titleAr) : (c.title_ar ?? null);
   const shortDesc = raw.shortDesc != null ? String(raw.shortDesc) : (c.short_desc ?? null);
   const imageUrl = raw.imageUrl != null ? String(raw.imageUrl) : (c.image_url ?? null);
-  const nameAr = cat && (cat as Record<string, unknown>).nameAr != null ? String((cat as Record<string, unknown>).nameAr) : (cat?.name ?? null);
   return {
     id: c.id,
     title: c.title,
@@ -54,7 +53,10 @@ function toCourseCardCourse(c: CourseWithCategory): CourseCardCourse {
         : raw.course_rating_count != null
           ? Number(raw.course_rating_count)
           : null,
-    category: cat ? { name: cat.name ?? "", nameAr: nameAr ?? undefined } : undefined,
+    categories: cats.map((cat) => ({
+      name: cat.name ?? "",
+      nameAr: (cat as { nameAr?: string | null }).nameAr ?? cat.name_ar ?? undefined,
+    })),
   };
 }
 

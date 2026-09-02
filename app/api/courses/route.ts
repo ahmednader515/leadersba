@@ -9,10 +9,9 @@ import {
   createQuiz,
   createQuestion,
   createQuestionOption,
-  findCategoryByNameForDashboard,
-  createCategory,
-  categoryIsManageableOnDashboard,
+  setCourseCategories,
 } from "@/lib/db";
+import { resolveCourseCategoryIds } from "@/lib/resolve-course-categories";
 
 export async function GET() {
   try {
@@ -52,6 +51,7 @@ export async function POST(request: NextRequest) {
     imageUrl?: string;
     price?: number;
     maxQuizAttempts?: number | null;
+    categoryIds?: string[];
     categoryId?: string | null;
     categoryName?: string;
     categoryNameAr?: string;
@@ -81,34 +81,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "رابط الدورة مستخدم مسبقاً" }, { status: 400 });
   }
 
-  let categoryId: string | null = null;
-  const catNameAr = (body.categoryNameAr ?? body.categoryName)?.trim();
-  const catNameEn = (body.categoryNameEn ?? body.categoryName)?.trim();
+  let categoryIds: string[] = [];
   const role = session.user.role;
-  if (catNameAr || catNameEn) {
-    let cat =
-      (catNameAr ? await findCategoryByNameForDashboard(catNameAr, session.user.id, role) : null) ??
-      (catNameEn ? await findCategoryByNameForDashboard(catNameEn, session.user.id, role) : null);
-    if (!cat) {
-      const slugBase = (catNameEn || catNameAr || "cat");
-      const slugCat = slugBase.toLowerCase().replace(/\s+/g, "-").replace(/[^\w\u0600-\u06FF-]+/g, "") || "cat";
-      const uniqueSlug = slugCat + "-" + Date.now();
-      cat = await createCategory({
-        name: catNameEn || catNameAr || slugBase,
-        name_ar: catNameAr || catNameEn || slugBase,
-        slug: uniqueSlug,
-        created_by_id: session.user.id,
-      });
-    }
-    categoryId = cat.id;
-  } else if (body.categoryId?.trim()) {
-    const cid = body.categoryId.trim();
-    const ok = await categoryIsManageableOnDashboard(cid, session.user.id, role);
-    if (!ok) {
-      return NextResponse.json({ error: "القسم غير صالح أو غير مسموح" }, { status: 400 });
-    }
-    categoryId = cid;
+  const resolved = await resolveCourseCategoryIds(body, session.user.id, role);
+  if (resolved.error) {
+    return NextResponse.json({ error: resolved.error }, { status: 400 });
   }
+  categoryIds = resolved.ids;
 
   let course;
   try {
@@ -125,7 +104,6 @@ export async function POST(request: NextRequest) {
       is_published: true,
       created_by_id: session.user.id,
       max_quiz_attempts: body.maxQuizAttempts ?? null,
-      category_id: categoryId,
       accepts_homework: !!body.acceptsHomework,
     });
   } catch (err) {
@@ -142,6 +120,8 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+
+  await setCourseCategories(course.id, categoryIds);
 
   const lessons = body.lessons ?? [];
   const quizzes = body.quizzes ?? [];

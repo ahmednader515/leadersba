@@ -17,7 +17,7 @@ type CourseRow = {
   imageUrl: string | null;
   lessonsCount: number;
   enrollmentsCount: number;
-  category: { id: string; name: string; nameAr?: string | null } | null;
+  categories: { id: string; name: string; nameAr?: string | null }[];
 };
 
 function CourseTableRow({
@@ -46,6 +46,11 @@ function CourseTableRow({
           <span className="font-medium text-[var(--color-foreground)]">
             {c.titleAr ?? c.title}
           </span>
+          {c.categories.length > 0 && (
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              {c.categories.map((cat) => cat.nameAr ?? cat.name).join(" · ")}
+            </p>
+          )}
         </div>
       </td>
       <td className="p-3 text-[var(--color-muted)]">{c.lessonsCount}</td>
@@ -114,28 +119,6 @@ export function CoursesManageList({ courses }: { courses: CourseRow[] }) {
     });
   }, [courses, searchQuery]);
 
-  const byCategory = useMemo(() => {
-    const order: string[] = [];
-    const map = new Map<string, { title: string; courses: CourseRow[] }>();
-    const noCatKey = "__none__";
-    for (const c of filteredCourses) {
-      const key = c.category ? c.category.id : noCatKey;
-      if (!map.has(key)) {
-        order.push(key);
-        map.set(key, {
-          title: c.category ? (c.category.nameAr ?? c.category.name) : t(`${L}.uncategorized`),
-          courses: [],
-        });
-      }
-      map.get(key)!.courses.push(c);
-    }
-    return order.map((key) => ({
-      key,
-      title: map.get(key)!.title,
-      courses: map.get(key)!.courses,
-    }));
-  }, [filteredCourses, t]);
-
   async function handleDelete(id: string) {
     if (confirmDelete !== id) {
       setConfirmDelete(id);
@@ -191,47 +174,32 @@ export function CoursesManageList({ courses }: { courses: CourseRow[] }) {
           <p className="text-[var(--color-muted)]">{t(`${L}.noCourses`)}</p>
         </div>
       ) : (
-        <div className="space-y-8">
-          {byCategory.map(({ key, title, courses: sectionCourses }) => (
-            <div
-              key={key}
-              className="overflow-x-auto rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)]"
-            >
-              <div className="border-b border-[var(--color-border)] bg-[var(--color-background)]/50 px-4 py-3">
-                <h3 className="text-base font-semibold text-[var(--color-foreground)]">
-                  {title}
-                </h3>
-                <p className="mt-0.5 text-sm text-[var(--color-muted)]">
-                  {fillMessage(t(`${L}.sectionCourseCount`), { count: sectionCourses.length })}
-                </p>
-              </div>
-              <table className="w-full" dir={dir}>
-                <thead>
-                  <tr className="border-b border-[var(--color-border)] bg-[var(--color-background)]/30">
-                    <th className={thClass}>{t(`${L}.colThumbTitle`)}</th>
-                    <th className={thClass}>{t(`${L}.colLessons`)}</th>
-                    <th className={thClass}>{t(`${L}.colStudents`)}</th>
-                    <th className={thClass}>{t(`${L}.colPrice`)}</th>
-                    <th className={thClass}>{t(`${L}.colStatus`)}</th>
-                    <th className={thClass}>{t(`${L}.colActions`)}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sectionCourses.map((c) => (
-                    <CourseTableRow
-                      key={c.id}
-                      c={c}
-                      deletingId={deletingId}
-                      confirmDelete={confirmDelete}
-                      onDelete={handleDelete}
-                      t={t}
-                      egp={egp}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+        <div className="overflow-x-auto rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)]">
+          <table className="w-full" dir={dir}>
+            <thead>
+              <tr className="border-b border-[var(--color-border)] bg-[var(--color-background)]/30">
+                <th className={thClass}>{t(`${L}.colThumbTitle`)}</th>
+                <th className={thClass}>{t(`${L}.colLessons`)}</th>
+                <th className={thClass}>{t(`${L}.colStudents`)}</th>
+                <th className={thClass}>{t(`${L}.colPrice`)}</th>
+                <th className={thClass}>{t(`${L}.colStatus`)}</th>
+                <th className={thClass}>{t(`${L}.colActions`)}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredCourses.map((c) => (
+                <CourseTableRow
+                  key={c.id}
+                  c={c}
+                  deletingId={deletingId}
+                  confirmDelete={confirmDelete}
+                  onDelete={handleDelete}
+                  t={t}
+                  egp={egp}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

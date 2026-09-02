@@ -31,7 +31,16 @@ export type TeacherCourseListItem = {
   duration?: string | null;
   level?: string | null;
   category?: CategoryShape;
+  categories?: CategoryShape[];
 };
+
+function courseCategories(course: TeacherCourseListItem): NonNullable<CategoryShape>[] {
+  if (course.categories && course.categories.length > 0) {
+    return course.categories.filter(Boolean) as NonNullable<CategoryShape>[];
+  }
+  if (course.category) return [course.category];
+  return [];
+}
 
 function normalizeSearch(s: string) {
   return s.trim().toLowerCase().replace(/\s+/g, " ");
@@ -50,16 +59,27 @@ function groupCoursesByCategory(courses: TeacherCourseListItem[]) {
   const map = new Map<string, { label: string; courses: TeacherCourseListItem[] }>();
   const order: string[] = [];
   for (const course of courses) {
-    const cat = course.category ?? null;
-    const key = cat?.slug?.trim() || "__uncategorized__";
-    const label = categoryLabel(cat);
-    let entry = map.get(key);
-    if (!entry) {
-      entry = { label, courses: [] };
-      map.set(key, entry);
-      order.push(key);
+    const cats = courseCategories(course);
+    if (cats.length === 0) {
+      const key = "__uncategorized__";
+      if (!map.has(key)) {
+        map.set(key, { label: categoryLabel(null), courses: [] });
+        order.push(key);
+      }
+      map.get(key)!.courses.push(course);
+      continue;
     }
-    entry.courses.push(course);
+    for (const cat of cats) {
+      const key = cat?.slug?.trim() || cat?.name?.trim() || "__uncategorized__";
+      const label = categoryLabel(cat);
+      if (!map.has(key)) {
+        map.set(key, { label, courses: [] });
+        order.push(key);
+      }
+      if (!map.get(key)!.courses.some((c) => c.id === course.id)) {
+        map.get(key)!.courses.push(course);
+      }
+    }
   }
   return order.map((slugKey) => {
     const { label, courses: groupCourses } = map.get(slugKey)!;
@@ -76,24 +96,25 @@ export function courseMatchesSearchQuery(course: TeacherCourseListItem, rawQuery
   const short = (course.shortDesc ?? course.short_desc ?? "").toLowerCase();
   const shortEn = (course.shortDescEn ?? course.short_desc_en ?? "").toLowerCase();
   const slug = (course.slug ?? "").toLowerCase();
-  const cat = course.category;
-  const catAr = (cat?.nameAr ?? cat?.name_ar ?? "").toLowerCase();
-  const catName = (cat?.name ?? "").toLowerCase();
-  const catSlug = (cat?.slug ?? "").toLowerCase();
+  const cats = courseCategories(course);
+  const catMatch = cats.some((cat) => {
+    const catAr = (cat?.nameAr ?? cat?.name_ar ?? "").toLowerCase();
+    const catName = (cat?.name ?? "").toLowerCase();
+    const catSlug = (cat?.slug ?? "").toLowerCase();
+    return catAr.includes(q) || catName.includes(q) || catSlug.includes(q);
+  });
   return (
     titleAr.includes(q) ||
     title.includes(q) ||
     short.includes(q) ||
     shortEn.includes(q) ||
     slug.includes(q) ||
-    catAr.includes(q) ||
-    catName.includes(q) ||
-    catSlug.includes(q)
+    catMatch
   );
 }
 
 function toCourseCardProps(c: TeacherCourseListItem) {
-  const cat = c.category;
+  const cats = courseCategories(c);
   return {
     id: c.id,
     title: c.title,
@@ -115,12 +136,11 @@ function toCourseCardProps(c: TeacherCourseListItem) {
       | null,
     duration: c.duration ?? null,
     level: c.level ?? null,
-    category: cat
-      ? {
-          name: cat.name ?? "",
-          nameAr: cat.nameAr ?? cat.name_ar ?? null,
-        }
-      : null,
+    categories: cats.map((cat) => ({
+      name: cat?.name ?? "",
+      nameAr: cat?.nameAr ?? cat?.name_ar ?? null,
+      slug: cat?.slug,
+    })),
   };
 }
 

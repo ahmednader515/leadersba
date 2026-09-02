@@ -124,11 +124,11 @@ export default async function CoursePage({ params }: Props) {
     (course as { titleAr?: string | null; title?: string | null }).titleAr ?? null,
     (course as { title?: string | null }).title ?? null,
   );
-  const categoryName = pickLocalizedText(
-    locale,
-    (course.category as { nameAr?: string | null; name?: string | null })?.nameAr ?? null,
-    (course.category as { name?: string | null })?.name ?? null,
-  );
+  const courseCategories =
+    (course as { categories?: { slug?: string; name?: string; nameAr?: string | null; name_ar?: string | null }[] }).categories ?? [];
+  const legacyCategory = (course as { category?: { slug?: string; name?: string; nameAr?: string | null; name_ar?: string | null } }).category;
+  const displayCategories =
+    courseCategories.length > 0 ? courseCategories : legacyCategory ? [legacyCategory] : [];
   const courseDescription = pickLocalizedText(
     locale,
     (course as { description?: string | null }).description ?? null,
@@ -241,10 +241,30 @@ export default async function CoursePage({ params }: Props) {
             )}
           </div>
           <div className="p-6 sm:p-8">
-            {categoryName && (
-              <span className="text-sm font-medium text-[var(--color-primary)]">
-                {categoryName}
-              </span>
+            {displayCategories.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {displayCategories.map((cat, i) => {
+                  const label = pickLocalizedText(
+                    locale,
+                    cat.nameAr ?? cat.name_ar ?? null,
+                    cat.name ?? null,
+                  );
+                  const slug = cat.slug?.trim();
+                  return slug ? (
+                    <Link
+                      key={`${slug}-${i}`}
+                      href={`/courses?category=${encodeURIComponent(slug)}`}
+                      className="text-sm font-medium text-[var(--color-primary)] hover:underline"
+                    >
+                      {label}
+                    </Link>
+                  ) : (
+                    <span key={i} className="text-sm font-medium text-[var(--color-primary)]">
+                      {label}
+                    </span>
+                  );
+                })}
+              </div>
             )}
             <h1 className="mt-2 text-3xl font-bold text-[var(--color-foreground)]">
               {title}

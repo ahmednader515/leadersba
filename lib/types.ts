@@ -33,10 +33,14 @@ export interface Category {
   description: string | null;
   image_url: string | null;
   order: number;
+  parent_id?: string | null;
+  parentId?: string | null;
   /** من أنشأ القسم (بعد rowToCamel من قاعدة البيانات) */
   createdById?: string | null;
   created_at: Date;
   updated_at: Date;
+  /** للواجهة — أبناء التصنيف */
+  children?: Category[];
 }
 
 export interface Review {
@@ -296,7 +300,9 @@ export interface Course {
   level: string | null;
   is_published: boolean;
   order: number;
-  category_id: string | null;
+  /** @deprecated use categories via CourseCategory join */
+  category_id?: string | null;
+  categories?: Category[];
   created_by_id: string | null;
   accepts_homework?: boolean;
   /** متوسط تقييم الكورس المحسوب من كل تقييمات دروسه */
@@ -431,7 +437,9 @@ export interface CourseApp {
   createdById?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
+  /** @deprecated use categories */
   category?: { id: string; name: string; nameAr?: string | null; slug: string } | null;
+  categories?: { id: string; name: string; nameAr?: string | null; name_ar?: string | null; slug: string }[];
 }
 
 export interface LessonApp {

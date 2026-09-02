@@ -347,6 +347,22 @@ export default async function DashboardPage() {
               )}
               {isAdmin && (
                 <Link
+                  href="/dashboard/categories"
+                  className="flex min-h-[200px] flex-col justify-center rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 text-center transition hover:border-[var(--color-primary)]/30"
+                >
+                  <h3 className="font-semibold text-[var(--color-foreground)]">
+                    {t("dashboardNav.manageCategories", "Manage categories")}
+                  </h3>
+                  <p className="mt-1 text-sm text-[var(--color-muted)]">
+                    {t(
+                      "dashboard.page.manageCategoriesMeta",
+                      "Create nested categories and organize courses",
+                    )}
+                  </p>
+                </Link>
+              )}
+              {isAdmin && (
+                <Link
                   href="/dashboard/live-streams"
                   className="flex min-h-[200px] flex-col justify-center rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 text-center transition hover:border-[var(--color-primary)]/30"
                 >

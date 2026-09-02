@@ -104,6 +104,11 @@ export function DashboardNav({
           {t("dashboardNav.privateStudentMessages", "Private student messages")}
         </NavLink>
       )}
+      {(isAdmin || isAssistant) && (
+        <NavLink href="/dashboard/categories">
+          {t("dashboardNav.manageCategories", "Manage categories")}
+        </NavLink>
+      )}
       {isAdmin && (
         <>
           <NavLink href="/dashboard/courses">

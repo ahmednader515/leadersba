@@ -1,5 +1,5 @@
 import { unstable_noStore } from "next/cache";
-import { getCoursesPublished, getTeacherIdsExcludedFromPublicCourseLists, getUserById } from "@/lib/db";
+import { getCoursesPublished, getTeacherIdsExcludedFromPublicCourseLists, getUserById, getCategoryBySlug, getCategoryDescendantIds } from "@/lib/db";
 import { redirect } from "next/navigation";
 import { TeacherCoursesSearch, type TeacherCourseListItem } from "./TeacherCoursesSearch";
 import { getLocaleFromCookie, getServerTranslator } from "@/lib/i18n/server";
@@ -44,8 +44,19 @@ export default async function CoursesPage({ searchParams }: Props) {
 
   let filtered =
     categorySlug?.trim()
-      ? courses.filter((c) => (c as { category?: { slug?: string } }).category?.slug === categorySlug.trim())
+      ? await (async () => {
+          const cat = await getCategoryBySlug(categorySlug.trim());
+          if (!cat) return [] as typeof courses;
+          const descendantIds = await getCategoryDescendantIds(cat.id);
+          const allowed = new Set([cat.id, ...descendantIds]);
+          return courses.filter((c) =>
+            ((c as { categories?: { id: string }[] }).categories ?? []).some((cat) => allowed.has(cat.id)),
+          );
+        })()
       : courses;
+
+  const filterCategory =
+    categorySlug?.trim() ? await getCategoryBySlug(categorySlug.trim()) : null;
 
   if (tid) {
     filtered = filtered.filter((c) => {
@@ -61,14 +72,9 @@ export default async function CoursesPage({ searchParams }: Props) {
     });
   }
 
-  const categoryName =
-    categorySlug && filtered.length > 0
-      ? pickLocalizedText(
-          locale,
-          (filtered[0] as { category?: { nameAr?: string | null; name?: string | null } }).category?.nameAr ?? null,
-          (filtered[0] as { category?: { name?: string | null } }).category?.name ?? null,
-        )
-      : null;
+  const categoryName = filterCategory
+    ? pickLocalizedText(locale, filterCategory.name_ar, filterCategory.name)
+    : null;
 
   const pageTitle = teacherName
     ? `${t("courses.teacherCoursesPrefix", "Courses by")} ${teacherName}`

@@ -22,7 +22,7 @@ export default async function DashboardCoursesPage() {
 
   const coursesPlain = courses.map((c) => {
     const row = c as Record<string, unknown>;
-    const cat = row.category as { id: string; name: string; nameAr?: string | null; slug: string } | null | undefined;
+    const cats = (row.categories as { id: string; name: string; name_ar?: string | null; nameAr?: string | null }[] | undefined) ?? [];
     const rawImg = row.imageUrl ?? row.image_url;
     const imageUrl: string | null = rawImg !== null && rawImg !== undefined && typeof rawImg === "string" ? rawImg : null;
     return {
@@ -35,9 +35,11 @@ export default async function DashboardCoursesPage() {
       imageUrl,
       lessonsCount: Number(row.lessonsCount ?? 0),
       enrollmentsCount: Number(row.enrollmentsCount ?? 0),
-      category: cat
-        ? { id: cat.id, name: cat.name, nameAr: cat.nameAr ?? null }
-        : null,
+      categories: cats.map((cat) => ({
+        id: cat.id,
+        name: cat.name,
+        nameAr: cat.nameAr ?? cat.name_ar ?? null,
+      })),
     };
   });
 

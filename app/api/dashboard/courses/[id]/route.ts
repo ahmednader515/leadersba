@@ -13,10 +13,10 @@ import {
   createQuiz,
   createQuestion,
   createQuestionOption,
-  findCategoryByNameForDashboard,
-  createCategory,
-  categoryIsManageableOnDashboard,
+  setCourseCategories,
+  getCategoryIdsForCourse,
 } from "@/lib/db";
+import { resolveCourseCategoryIds } from "@/lib/resolve-course-categories";
 
 type LessonInput = { title: string; titleAr?: string; videoUrl?: string; content?: string; pdfUrl?: string; acceptsHomework?: boolean };
 type QuestionOptionInput = { text: string; isCorrect: boolean };
@@ -49,6 +49,7 @@ export async function PUT(
     price?: number;
     isPublished?: boolean;
     maxQuizAttempts?: number | null;
+    categoryIds?: string[];
     categoryId?: string | null;
     categoryName?: string;
     categoryNameAr?: string;
@@ -83,43 +84,16 @@ export async function PUT(
   }
 
   const role = session.user.role;
-  const currentCategoryId =
-    (course as { categoryId?: string | null }).categoryId ??
-    (course as { category_id?: string | null }).category_id ??
-    null;
 
-  let categoryId: string | null | undefined = body.categoryId;
-  const catNameAr = (body.categoryNameAr ?? body.categoryName)?.trim();
-  const catNameEn = (body.categoryNameEn ?? body.categoryName)?.trim();
-  if (catNameAr || catNameEn) {
-    let cat =
-      (catNameAr ? await findCategoryByNameForDashboard(catNameAr, session.user.id, role) : null) ??
-      (catNameEn ? await findCategoryByNameForDashboard(catNameEn, session.user.id, role) : null);
-    if (!cat) {
-      const slugBase = catNameEn || catNameAr || "cat";
-      const slugCat = slugBase.toLowerCase().replace(/\s+/g, "-").replace(/[^\w\u0600-\u06FF-]+/g, "") || "cat";
-      const uniqueSlug = slugCat + "-" + Date.now();
-      cat = await createCategory({
-        name: catNameEn || catNameAr || slugBase,
-        name_ar: catNameAr || catNameEn || slugBase,
-        slug: uniqueSlug,
-        created_by_id: session.user.id,
-      });
+  let shouldUpdateCategories = body.categoryIds !== undefined || body.categoryId !== undefined
+    || body.categoryNameAr !== undefined || body.categoryNameEn !== undefined || body.categoryName !== undefined;
+  let categoryIds: string[] | undefined;
+  if (shouldUpdateCategories) {
+    const resolved = await resolveCourseCategoryIds(body, session.user.id, role);
+    if (resolved.error) {
+      return NextResponse.json({ error: resolved.error }, { status: 400 });
     }
-    categoryId = cat.id;
-  } else if (body.categoryId !== undefined) {
-    if (body.categoryId === null || body.categoryId === "") {
-      categoryId = null;
-    } else {
-      const incoming = String(body.categoryId).trim();
-      if (incoming !== currentCategoryId) {
-        const ok = await categoryIsManageableOnDashboard(incoming, session.user.id, role);
-        if (!ok) {
-          return NextResponse.json({ error: "القسم غير صالح أو غير مسموح" }, { status: 400 });
-        }
-      }
-      categoryId = incoming;
-    }
+    categoryIds = resolved.ids;
   }
 
   await updateCourse(id, {
@@ -133,9 +107,12 @@ export async function PUT(
     price: body.price ?? 0,
     is_published: body.isPublished ?? true,
     max_quiz_attempts: body.maxQuizAttempts ?? null,
-    ...(categoryId !== undefined && { category_id: categoryId }),
     ...(body.acceptsHomework !== undefined && { accepts_homework: body.acceptsHomework }),
   });
+
+  if (categoryIds !== undefined) {
+    await setCourseCategories(id, categoryIds);
+  }
 
   await deleteLessonsByCourseId(id);
   const lessons = body.lessons ?? [];
@@ -242,7 +219,7 @@ export async function GET(
     price: Number(c.price ?? 0),
     isPublished: c.isPublished ?? c.is_published ?? true,
     maxQuizAttempts: c.maxQuizAttempts ?? c.max_quiz_attempts ?? null,
-    categoryId: (c as { categoryId?: string | null }).categoryId ?? null,
+    categoryIds: await getCategoryIdsForCourse(id),
     lessons: data.lessons.map((l) => ({
       title: l.title,
       titleAr: l.titleAr ?? l.title_ar,
