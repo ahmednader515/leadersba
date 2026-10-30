@@ -196,6 +196,7 @@ CREATE TABLE IF NOT EXISTS "LiveStream" (
   meeting_id        TEXT,
   meeting_password  TEXT,
   scheduled_at      TIMESTAMPTZ NOT NULL,
+  is_published      BOOLEAN NOT NULL DEFAULT TRUE,
   description       TEXT,
   "order"           INT NOT NULL DEFAULT 0,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),

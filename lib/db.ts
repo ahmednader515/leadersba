@@ -4715,14 +4715,22 @@ export async function createPayment(userId: string, courseId: string, amount: nu
 }
 
 // ----- LiveStream -----
+async function ensureLiveStreamPublicationSchema(): Promise<void> {
+  return ensureOnce("ensureLiveStreamPublicationSchema", async () => {
+    await sql`ALTER TABLE "LiveStream" ADD COLUMN IF NOT EXISTS is_published BOOLEAN NOT NULL DEFAULT TRUE`;
+  });
+}
+
 export async function getLiveStreamsByCourseId(courseId: string): Promise<LiveStream[]> {
+  await ensureLiveStreamPublicationSchema();
   const rows = await sql`
-    SELECT * FROM "LiveStream" WHERE course_id = ${courseId} ORDER BY "order" ASC, scheduled_at ASC
+    SELECT * FROM "LiveStream" WHERE course_id = ${courseId} AND is_published = TRUE ORDER BY "order" ASC, scheduled_at ASC
   `;
   return rowsToCamel(rows as Record<string, unknown>[]) as unknown as LiveStream[];
 }
 
 export async function getLiveStreamsAll(): Promise<(LiveStream & { course?: { id: string; title: string; slug: string } })[]> {
+  await ensureLiveStreamPublicationSchema();
   const rows = await sql`
     SELECT ls.*, c.id as c_id, c.title as c_title, c.slug as c_slug
     FROM "LiveStream" ls
@@ -4739,6 +4747,7 @@ export async function getLiveStreamsAll(): Promise<(LiveStream & { course?: { id
 export async function getLiveStreamsForTeacher(
   teacherId: string,
 ): Promise<(LiveStream & { course?: { id: string; title: string; slug: string } })[]> {
+  await ensureLiveStreamPublicationSchema();
   const rows = await sql`
     SELECT ls.*, c.id as c_id, c.title as c_title, c.slug as c_slug
     FROM "LiveStream" ls
@@ -4753,6 +4762,7 @@ export async function getLiveStreamsForTeacher(
 }
 
 export async function getLiveStreamById(id: string): Promise<LiveStream | null> {
+  await ensureLiveStreamPublicationSchema();
   const rows = await sql`SELECT * FROM "LiveStream" WHERE id = ${id} LIMIT 1`;
   return rowToCamel(rows[0] as Record<string, unknown>) as LiveStream | null;
 }
@@ -4792,8 +4802,11 @@ export async function updateLiveStream(
     scheduled_at?: Date;
     description?: string | null;
     order?: number;
+    is_published?: boolean;
   }
 ): Promise<void> {
+  await ensureLiveStreamPublicationSchema();
+  if (data.is_published !== undefined) await sql`UPDATE "LiveStream" SET is_published = ${data.is_published}, updated_at = NOW() WHERE id = ${id}`;
   if (data.course_id !== undefined) await sql`UPDATE "LiveStream" SET course_id = ${data.course_id}, updated_at = NOW() WHERE id = ${id}`;
   if (data.title !== undefined) await sql`UPDATE "LiveStream" SET title = ${data.title}, updated_at = NOW() WHERE id = ${id}`;
   if (data.title_ar !== undefined) await sql`UPDATE "LiveStream" SET title_ar = ${data.title_ar}, updated_at = NOW() WHERE id = ${id}`;

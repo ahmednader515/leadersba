@@ -791,6 +791,13 @@ export const enMessages: Messages = {
         "The code appears large and tilted in the center of the video with low opacity.",
     },
     liveStreamsList: {
+      colStatus: "Status",
+      published: "Published",
+      unpublished: "Unpublished",
+      publish: "Publish",
+      unpublish: "Unpublish",
+      updating: "Saving...",
+      publishFailed: "Could not update publication status. Please try again.",
       empty: "No live streams.",
       scheduled: "Scheduled",
       joinLink: "Open link",

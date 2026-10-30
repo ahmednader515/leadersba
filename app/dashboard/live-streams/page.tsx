@@ -50,6 +50,7 @@ export default async function DashboardLiveStreamsPage() {
   meeting_id        TEXT,
   meeting_password  TEXT,
   scheduled_at      TIMESTAMPTZ NOT NULL,
+  is_published      BOOLEAN NOT NULL DEFAULT TRUE,
   description       TEXT,
   "order"           INT NOT NULL DEFAULT 0,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -77,6 +78,7 @@ CREATE INDEX IF NOT EXISTS "LiveStream_scheduled_at_idx" ON "LiveStream"(schedul
       provider: String(row.provider ?? ""),
       meetingUrl: String(row.meetingUrl ?? row.meeting_url ?? ""),
       scheduledAt: row.scheduledAt ?? row.scheduled_at,
+      isPublished: Boolean(row.isPublished ?? row.is_published ?? true),
       course: row.course as { id: string; title: string; slug: string } | undefined,
     };
   });

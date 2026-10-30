@@ -788,6 +788,13 @@ export const arMessages: Messages = {
         "يظهر الكود كبيرًا ومائلًا في منتصف الفيديو بثبات وشفافية منخفضة.",
     },
     liveStreamsList: {
+      colStatus: "الحالة",
+      published: "منشور",
+      unpublished: "غير منشور",
+      publish: "نشر",
+      unpublish: "إلغاء النشر",
+      updating: "جاري الحفظ...",
+      publishFailed: "تعذر تحديث حالة النشر. حاول مرة أخرى.",
       empty: "لا توجد بثوث مباشرة.",
       scheduled: "مجدول",
       joinLink: "فتح الرابط",

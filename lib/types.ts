@@ -405,6 +405,7 @@ export type LiveStreamProvider = "zoom" | "google_meet";
 
 export interface LiveStream {
   id: string;
+  is_published: boolean;
   course_id: string;
   title: string;
   title_ar: string | null;

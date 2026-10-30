@@ -61,11 +61,15 @@ export async function PUT(
     scheduledAt?: string;
     description?: string | null;
     order?: number;
+    isPublished?: boolean;
   };
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "طلب غير صالح" }, { status: 400 });
+  }
+  if (body.isPublished !== undefined && typeof body.isPublished !== "boolean") {
+    return NextResponse.json({ error: "حالة النشر غير صالحة" }, { status: 400 });
   }
   if (body.provider !== undefined && body.provider !== "zoom" && body.provider !== "google_meet") {
     return NextResponse.json({ error: "نوع البث يجب أن يكون zoom أو google_meet" }, { status: 400 });
@@ -87,6 +91,7 @@ export async function PUT(
     }
     if (body.description !== undefined) await updateLiveStream(id, { description: body.description });
     if (body.order !== undefined) await updateLiveStream(id, { order: body.order });
+    if (body.isPublished !== undefined) await updateLiveStream(id, { is_published: body.isPublished });
     const updated = await getLiveStreamById(id);
     return NextResponse.json(updated);
   } catch (e) {
